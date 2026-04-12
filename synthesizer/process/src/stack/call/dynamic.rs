@@ -637,7 +637,7 @@ impl<N: Network> CallTrait<N> for CallDynamic<N> {
 
             // Ensure exactly 4 public variables were added: program name, program network,
             // function name, and function ID. This guards against spurious public injections.
-            if A::num_public() != num_public + 4 {
+            if !A::is_in_simulate_mode() && A::num_public() != num_public + 4 {
                 return Err(anyhow!("Forbidden: 'call.dynamic' injected excess public variables").into());
             }
 

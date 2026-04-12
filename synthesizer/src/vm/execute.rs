@@ -17,7 +17,6 @@
 
 use super::*;
 
-use crate::process_simulate;
 use snarkvm_synthesizer_error::*;
 
 impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
@@ -270,7 +269,7 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
             }};
         }
 
-        let result = process_simulate!(self, logic);
+        let result = process!(self, logic);
         finish!(timer, "Execute the authorization (proofless)");
         result
     }
@@ -353,7 +352,7 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
             }};
         }
 
-        let result = process_simulate!(self, logic);
+        let result = process!(self, logic);
         finish!(timer, "Execute the fee authorization (proofless)");
         result
     }

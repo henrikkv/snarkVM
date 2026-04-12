@@ -130,11 +130,13 @@ impl<N: Network> TranslationAssignment<N> {
     // to `A` while the constraint system is still loaded facilitates testing.
     pub(crate) fn to_circuit_assignment_internal<A: Aleo<Network = N>>(&self, translation_index: u16) -> Result<()> {
         // Ensure the circuit environment is clean.
-        ensure!(
-            A::count() == (0, 1, 0, 0, (0, 0, 0)),
-            "Circuit environment is not clean: expected (0, 1, 0, 0, (0, 0, 0)), got {:?}",
-            A::count()
-        );
+        if !A::is_in_simulate_mode() {
+            ensure!(
+                A::count() == (0, 1, 0, 0, (0, 0, 0)),
+                "Circuit environment is not clean: expected (0, 1, 0, 0, (0, 0, 0)), got {:?}",
+                A::count()
+            );
+        }
         A::reset();
 
         // ******** Constants
