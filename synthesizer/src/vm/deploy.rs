@@ -15,6 +15,7 @@
 
 use super::*;
 
+use crate::process_simulate;
 use snarkvm_synthesizer_error::*;
 
 impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
@@ -89,6 +90,60 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
         // Return the deploy transaction.
         Ok(Transaction::from_deployment(owner, deployment, fee)?)
     }
+
+    pub fn deploy_local_proofless<R: Rng + CryptoRng>(
+        &self,
+        private_key: &PrivateKey<N>,
+        program: &Program<N>,
+        fee_record: Option<Record<N, Plaintext<N>>>,
+        priority_fee_in_microcredits: u64,
+        query: Option<&dyn QueryTrait<N>>,
+        rng: &mut R,
+    ) -> Result<Transaction<N>, VmDeployError> {
+        let mut deployment = self.deploy_raw_proofless(program, rng)?;
+        if deployment.program().functions().is_empty() {
+            return Err(anyhow!("Attempted to create an empty transaction deployment").into());
+        }
+        let query = match query {
+            Some(q) => q,
+            None => &Query::VM(self.block_store().clone()),
+        };
+        let consensus_version = N::CONSENSUS_VERSION(query.current_block_height()?)?;
+        if consensus_version < ConsensusVersion::V9 {
+            deployment.set_program_checksum_raw(None);
+            deployment.set_program_owner_raw(None)
+        } else {
+            deployment.set_program_checksum_raw(Some(deployment.program().to_checksum()));
+            deployment.set_program_owner_raw(Some(Address::try_from(private_key)?));
+        }
+        if consensus_version < ConsensusVersion::V14 {
+            let record_names: Vec<_> = deployment.program().records().keys().cloned().collect();
+            deployment.remove_verifying_keys(&record_names);
+        }
+        let deployment_id = deployment.to_deployment_id()?;
+        let owner = ProgramOwner::new(private_key, deployment_id, rng)?;
+
+        let (minimum_deployment_cost, _) = deployment_cost(&self.process().read(), &deployment, consensus_version)?;
+        let fee_authorization = match fee_record {
+            Some(record) => self.authorize_fee_private(
+                private_key,
+                record,
+                minimum_deployment_cost,
+                priority_fee_in_microcredits,
+                deployment_id,
+                rng,
+            )?,
+            None => self.authorize_fee_public(
+                private_key,
+                minimum_deployment_cost,
+                priority_fee_in_microcredits,
+                deployment_id,
+                rng,
+            )?,
+        };
+        let fee = self.execute_fee_authorization_local_proofless(fee_authorization, Some(query), rng)?;
+        Ok(Transaction::from_deployment(owner, deployment, fee)?)
+    }
 }
 
 impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
@@ -114,6 +169,26 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
         let timer = timer!("VM::deploy_raw");
         let result = process!(self, logic);
         finish!(timer, "Compute the deployment");
+        result
+    }
+
+    #[inline]
+    pub(super) fn deploy_raw_proofless<R: Rng + CryptoRng>(
+        &self,
+        program: &Program<N>,
+        rng: &mut R,
+    ) -> Result<Deployment<N>, VmDeployError> {
+        macro_rules! logic {
+            ($process:expr, $network:path, $aleo:path) => {{
+                let program = cast_ref!(&program as Program<$network>);
+                let deployment = $process.deploy::<$aleo, _>(program, rng)?;
+                Ok(cast_ref!(deployment as Deployment<N>).clone())
+            }};
+        }
+
+        let timer = timer!("VM::deploy_raw_proofless");
+        let result = process_simulate!(self, logic);
+        finish!(timer, "Compute the deployment (proofless)");
         result
     }
 }

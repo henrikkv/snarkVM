@@ -77,6 +77,11 @@ impl<N: Network> Deployment<N> {
         Ok(deployment)
     }
 
+    pub fn new_proofless(edition: u16, program: Program<N>) -> Result<Self> {
+        let program_checksum = Some(program.to_checksum());
+        Ok(Self { edition, program, verifying_keys: vec![], program_checksum, program_owner: Some(Address::zero()) })
+    }
+
     /// Checks that the deployment is ordered.
     pub fn check_is_ordered(&self) -> Result<()> {
         let program_id = self.program.id();
@@ -108,11 +113,14 @@ impl<N: Network> Deployment<N> {
         // Ensure the number of records does not exceed the maximum.
         ensure!(num_records <= N::MAX_RECORDS, "Deployment has too many records (maximum is '{}')", N::MAX_RECORDS);
 
-        // Ensure the deployment contains verifying keys.
-        ensure!(
-            !self.verifying_keys.is_empty(),
-            "No verifying keys present in the deployment for program '{program_id}'"
-        );
+        if self.verifying_keys.is_empty() {
+            ensure!(
+                self.program_checksum.is_some(),
+                "Proofless deployment for program '{program_id}' must include a program checksum"
+            );
+            return Ok(());
+        }
+
         // Ensure the number of verifying keys is either num_functions or num_functions + num_records.
         ensure!(
             self.verifying_keys.len() == num_functions || self.verifying_keys.len() == num_functions + num_records,
@@ -206,7 +214,8 @@ impl<N: Network> Deployment<N> {
 
     /// Returns the function verifying keys.
     pub fn function_verifying_keys(&self) -> &[(Identifier<N>, (VerifyingKey<N>, Certificate<N>))] {
-        &self.verifying_keys[..self.program.functions().len()]
+        let num_functions = self.program.functions().len().min(self.verifying_keys.len());
+        &self.verifying_keys[..num_functions]
     }
 
     /// Returns the record translation verifying keys, if any are present.

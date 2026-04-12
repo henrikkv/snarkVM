@@ -108,6 +108,57 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
         ))
     }
 
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub fn speculate_local_proofless<'a, R: Rng + CryptoRng>(
+        &self,
+        state: FinalizeGlobalState,
+        time_since_last_block: i64,
+        coinbase_reward: Option<u64>,
+        candidate_ratifications: Vec<Ratify<N>>,
+        candidate_solutions: &Solutions<N>,
+        candidate_transactions: impl ExactSizeIterator<Item = &'a Transaction<N>>,
+        _rng: &mut R,
+    ) -> Result<(Ratifications<N>, Transactions<N>, Vec<N::TransactionID>, Vec<FinalizeOperation<N>>)> {
+        let timer = timer!("VM::speculate_local_proofless");
+
+        let candidate_transactions: Vec<_> = candidate_transactions.collect::<Vec<_>>();
+        let candidate_transaction_ids: Vec<_> = candidate_transactions.iter().map(|tx| tx.id()).collect();
+
+        let (ratifications, confirmed_transactions, speculation_aborted_transactions, ratified_finalize_operations) =
+            self.atomic_speculate(
+                state,
+                time_since_last_block,
+                coinbase_reward,
+                candidate_ratifications,
+                candidate_solutions.clone(),
+                candidate_transactions.into_iter().cloned().collect(),
+            )?;
+
+        let speculation_aborted_transaction_ids = speculation_aborted_transactions.iter().map(|(tx, e)| (tx.id(), e));
+        let unordered_aborted_transaction_ids: IndexMap<N::TransactionID, &String> =
+            speculation_aborted_transaction_ids.collect();
+
+        let aborted_transaction_ids: Vec<_> = candidate_transaction_ids
+            .into_iter()
+            .filter_map(|tx_id| {
+                unordered_aborted_transaction_ids.get(&tx_id).map(|error| {
+                    warn!("Speculation safely aborted a transaction - {error} ({tx_id})");
+                    tx_id
+                })
+            })
+            .collect();
+
+        finish!(timer, "Finished dry-run of the transactions (proofless)");
+
+        Ok((
+            ratifications,
+            confirmed_transactions.into_iter().collect(),
+            aborted_transaction_ids,
+            ratified_finalize_operations,
+        ))
+    }
+
     /// Checks the speculation on the given transactions in the VM.
     /// This function also ensure that the given transactions are well-formed and unique.
     ///

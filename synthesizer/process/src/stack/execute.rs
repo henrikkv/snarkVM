@@ -551,7 +551,9 @@ impl<N: Network> Stack<N> {
         })?;
 
         // If the circuit is in `Execute` or `PackageRun` mode, then ensure the circuit is satisfied.
-        if matches!(registers.call_stack_ref(), CallStack::Execute(..) | CallStack::PackageRun(..)) {
+        if !A::is_in_simulate_mode()
+            && matches!(registers.call_stack_ref(), CallStack::Execute(..) | CallStack::PackageRun(..))
+        {
             // If the circuit is empty or not satisfied, then throw an error.
             if A::num_constraints() == 0 || !A::is_satisfied() {
                 return Err(anyhow!(
@@ -571,8 +573,12 @@ impl<N: Network> Stack<N> {
         if matches!(registers.call_stack_ref(), CallStack::Synthesize(..) | CallStack::Execute(..)) {
             // If the proving key does not exist, then synthesize it.
             if !self.contains_proving_key(function.name()) {
-                // Add the circuit key to the mapping.
-                self.synthesize_from_assignment(function.name(), &assignment)?;
+                if A::is_in_simulate_mode() {
+                    super::helpers::synthesize_proving_key_for_simulate(self, function.name(), rng)?;
+                } else {
+                    // Add the circuit key to the mapping.
+                    self.synthesize_from_assignment(function.name(), &assignment)?;
+                }
                 lap!(timer, "Synthesize the {} circuit key", function.name());
             }
         }
@@ -602,6 +608,11 @@ impl<N: Network> Stack<N> {
         }
         // If the circuit is in `Execute` mode, then execute the circuit into a transition.
         else if let CallStack::Execute(_, trace, translations) = registers.call_stack_ref() {
+            // Pop the translation group for this execution level.
+            // This group contains translations (with proving keys) from dynamic calls made at this level.
+            let translations_for_transition =
+                translations.write().pop().ok_or_else(|| anyhow!("Translation stack underflow: no group to pop"))?;
+
             registers.ensure_console_and_circuit_registers_match()?;
 
             // Construct the transition.
@@ -618,11 +629,6 @@ impl<N: Network> Stack<N> {
                 num_function_constraints,
                 num_response_constraints,
             };
-
-            // Pop the translation group for this execution level.
-            // This group contains translations (with proving keys) from dynamic calls made at this level.
-            let translations_for_transition =
-                translations.write().pop().ok_or_else(|| anyhow!("Translation stack underflow: no group to pop"))?;
 
             // Add the transition to the trace.
             trace.write().insert_transition(

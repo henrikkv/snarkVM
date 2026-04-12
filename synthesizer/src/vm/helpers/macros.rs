@@ -110,3 +110,22 @@ macro_rules! process {
         }
     }};
 }
+
+#[macro_export]
+macro_rules! process_simulate {
+    ($self:ident, $logic:ident) => {{
+        match N::ID {
+            console::network::TestnetV0::ID => {
+                let process = (&$self.process as &dyn std::any::Any)
+                    .downcast_ref::<Arc<RwLock<Process<console::network::TestnetV0>>>>()
+                    .ok_or_else(|| anyhow!("Failed to downcast {}", stringify!($self.process)))?;
+                $logic!(process.read(), console::network::TestnetV0, snarkvm_circuit::network::AleoSimulate)
+            }
+            _ => return Err(anyhow!(
+                "Local proofless simulation is only supported on TestnetV0 (got network id {})",
+                N::ID
+            )
+            .into()),
+        }
+    }};
+}

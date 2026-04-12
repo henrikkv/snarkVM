@@ -24,6 +24,9 @@ pub use canary_v0::*;
 pub mod testnet_v0;
 pub use testnet_v0::*;
 
+pub mod simulate;
+pub use simulate::*;
+
 pub mod v0;
 pub use v0::*;
 

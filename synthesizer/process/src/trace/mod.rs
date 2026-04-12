@@ -246,6 +246,17 @@ impl<N: Network> Trace<N> {
         Execution::from(self.transitions.iter().cloned(), global_state_root, Some(proof))
     }
 
+    pub fn to_execution_without_proof(&self) -> Result<Execution<N>> {
+        ensure!(!self.is_fee(), "The trace cannot build execution without proof for a fee type");
+        ensure!(
+            self.transitions.iter().all(|transition| !(transition.is_fee_private() || transition.is_fee_public())),
+            "The trace cannot build execution without proof when a fee transition is present"
+        );
+        let global_state_root =
+            self.global_state_root.get().ok_or_else(|| anyhow!("Global state root has not been set"))?;
+        Execution::from(self.transitions.iter().cloned(), *global_state_root, None)
+    }
+
     /// Returns a new fee with a proof, for the current inclusion assignment and global state root.
     pub fn prove_fee<A: circuit::Aleo<Network = N>, R: Rng + CryptoRng>(
         &self,
@@ -286,6 +297,22 @@ impl<N: Network> Trace<N> {
         )?;
         // Return the fee.
         Ok(Fee::from_unchecked(fee_transition.clone(), global_state_root, Some(proof)))
+    }
+
+    pub fn to_fee_without_proof(&self) -> Result<Fee<N>> {
+        let is_fee_public = self.is_fee_public();
+        let is_fee_private = self.is_fee_private();
+        ensure!(is_fee_public || is_fee_private, "The trace cannot build fee without proof for an execution type");
+        let inclusion_assignments =
+            self.inclusion_assignments.get().ok_or_else(|| anyhow!("Inclusion assignments have not been set"))?;
+        match is_fee_public {
+            true => ensure!(inclusion_assignments.is_empty(), "Expected 0 inclusion assignments for the fee"),
+            false => ensure!(inclusion_assignments.len() == 1, "Expected 1 inclusion assignment for the fee"),
+        }
+        let global_state_root =
+            self.global_state_root.get().ok_or_else(|| anyhow!("Global state root has not been set"))?;
+        let fee_transition = &self.transitions[0];
+        Fee::from(fee_transition.clone(), *global_state_root, None)
     }
 
     /// Checks the proof for the execution.

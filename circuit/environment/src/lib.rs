@@ -39,6 +39,9 @@ pub mod macros;
 #[allow(unused_imports)]
 pub use macros::*;
 
+pub mod simulate_circuit;
+pub use simulate_circuit::*;
+
 pub mod testnet_circuit;
 pub use testnet_circuit::*;
 

@@ -17,6 +17,7 @@
 
 use super::*;
 
+use crate::process_simulate;
 use snarkvm_synthesizer_error::*;
 
 impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
@@ -168,6 +169,20 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
         };
         self.execute_fee_authorization_raw(authorization, query, rng)
     }
+
+    pub fn execute_fee_authorization_local_proofless<R: Rng + CryptoRng>(
+        &self,
+        authorization: Authorization<N>,
+        query: Option<&dyn QueryTrait<N>>,
+        rng: &mut R,
+    ) -> Result<Fee<N>, VmExecError> {
+        debug_assert!(authorization.is_fee_private() || authorization.is_fee_public(), "Expected a fee authorization");
+        let query = match query {
+            Some(q) => q,
+            None => &Query::VM(self.block_store().clone()),
+        };
+        self.execute_fee_authorization_proofless_raw(authorization, query, rng)
+    }
 }
 
 impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
@@ -226,6 +241,40 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
         result
     }
 
+    #[inline]
+    fn execute_authorization_proofless_raw<R: Rng + CryptoRng>(
+        &self,
+        authorization: Authorization<N>,
+        query: &dyn QueryTrait<N>,
+        rng: &mut R,
+    ) -> Result<(Execution<N>, Response<N>), VmExecError> {
+        let timer = timer!("VM::execute_authorization_proofless_raw");
+
+        let consensus_version = N::CONSENSUS_VERSION(query.current_block_height()?)?;
+        authorization.check_valid_edition(&self.process.read(), consensus_version)?;
+        authorization.check_valid_records(consensus_version)?;
+
+        macro_rules! logic {
+            ($process:expr, $network:path, $aleo:path) => {{
+                let authorization = cast_ref!(authorization as Authorization<$network>);
+                let (response, mut trace) = $process.execute::<$aleo, _>(authorization.clone(), rng)?;
+                lap!(timer, "Execute the call");
+
+                cast_mut_ref!(trace as Trace<N>).prepare(query)?;
+                lap!(timer, "Prepare the assignments");
+
+                let execution = cast_mut_ref!(trace as Trace<N>).to_execution_without_proof()?;
+                lap!(timer, "Build execution without proof");
+
+                Ok((cast_ref!(execution as Execution<N>).clone(), cast_ref!(response as Response<N>).clone()))
+            }};
+        }
+
+        let result = process_simulate!(self, logic);
+        finish!(timer, "Execute the authorization (proofless)");
+        result
+    }
+
     /// Executes a call to the program function for the given fee authorization.
     /// Returns the fee.
     #[inline]
@@ -273,6 +322,88 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
         let result = process!(self, logic);
         finish!(timer, "Execute the authorization");
         result
+    }
+
+    #[inline]
+    fn execute_fee_authorization_proofless_raw<R: Rng + CryptoRng>(
+        &self,
+        authorization: Authorization<N>,
+        query: &dyn QueryTrait<N>,
+        rng: &mut R,
+    ) -> Result<Fee<N>, VmExecError> {
+        let timer = timer!("VM::execute_fee_authorization_proofless_raw");
+
+        let consensus_version = N::CONSENSUS_VERSION(query.current_block_height()?)?;
+        authorization.check_valid_edition(&self.process.read(), consensus_version)?;
+        authorization.check_valid_records(consensus_version)?;
+
+        macro_rules! logic {
+            ($process:expr, $network:path, $aleo:path) => {{
+                let authorization = cast_ref!(authorization as Authorization<$network>);
+                let (_, mut trace) = $process.execute::<$aleo, _>(authorization.clone(), rng)?;
+                lap!(timer, "Execute the call");
+
+                cast_mut_ref!(trace as Trace<N>).prepare(query)?;
+                lap!(timer, "Prepare the assignments");
+
+                let fee = cast_mut_ref!(trace as Trace<N>).to_fee_without_proof()?;
+                lap!(timer, "Build fee without proof");
+
+                Ok(cast_ref!(fee as Fee<N>).clone())
+            }};
+        }
+
+        let result = process_simulate!(self, logic);
+        finish!(timer, "Execute the fee authorization (proofless)");
+        result
+    }
+
+    pub fn execute_with_response_local_proofless<R: Rng + CryptoRng>(
+        &self,
+        private_key: &PrivateKey<N>,
+        (program_id, function_name): (impl TryInto<ProgramID<N>>, impl TryInto<Identifier<N>>),
+        inputs: impl ExactSizeIterator<Item = impl TryInto<Value<N>>>,
+        fee_record: Option<Record<N, Plaintext<N>>>,
+        priority_fee_in_microcredits: u64,
+        query: Option<&dyn QueryTrait<N>>,
+        rng: &mut R,
+    ) -> Result<(Transaction<N>, Response<N>), VmExecError> {
+        let query = match query {
+            Some(q) => q,
+            None => &Query::VM(self.block_store().clone()),
+        };
+        let authorization = self.authorize(private_key, program_id, function_name, inputs, rng)?;
+        let is_fee_required = !(authorization.is_split() || authorization.is_upgrade());
+        let is_priority_fee_declared = priority_fee_in_microcredits > 0;
+        let (execution, response) = self.execute_authorization_proofless_raw(authorization, query, rng)?;
+        let fee = match is_fee_required || is_priority_fee_declared {
+            true => {
+                let consensus_version = N::CONSENSUS_VERSION(query.current_block_height()?)?;
+                let (minimum_execution_cost, _) =
+                    execution_cost(&self.process().read(), &execution, consensus_version)?;
+                let execution_id = execution.to_execution_id()?;
+                let fee_authorization = match fee_record {
+                    Some(record) => self.authorize_fee_private(
+                        private_key,
+                        record,
+                        minimum_execution_cost,
+                        priority_fee_in_microcredits,
+                        execution_id,
+                        rng,
+                    )?,
+                    None => self.authorize_fee_public(
+                        private_key,
+                        minimum_execution_cost,
+                        priority_fee_in_microcredits,
+                        execution_id,
+                        rng,
+                    )?,
+                };
+                Some(self.execute_fee_authorization_proofless_raw(fee_authorization, query, rng)?)
+            }
+            false => None,
+        };
+        Ok((Transaction::from_execution(execution, fee)?, response))
     }
 }
 
