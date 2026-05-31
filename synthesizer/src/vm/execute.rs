@@ -262,7 +262,7 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
         let timer = timer!("VM::execute_authorization_proofless_raw");
 
         let consensus_version = N::CONSENSUS_VERSION(query.current_block_height()?)?;
-        authorization.check_valid_edition(&self.process.read(), consensus_version)?;
+        authorization.check_valid_edition(&self.process.lock(), consensus_version)?;
         authorization.check_valid_records(consensus_version)?;
 
         macro_rules! logic {
@@ -358,7 +358,7 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
         let timer = timer!("VM::execute_fee_authorization_proofless_raw");
 
         let consensus_version = N::CONSENSUS_VERSION(query.current_block_height()?)?;
-        authorization.check_valid_edition(&self.process.read(), consensus_version)?;
+        authorization.check_valid_edition(&self.process.lock(), consensus_version)?;
         authorization.check_valid_records(consensus_version)?;
 
         macro_rules! logic {
@@ -404,7 +404,7 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
             true => {
                 let consensus_version = N::CONSENSUS_VERSION(query.current_block_height()?)?;
                 let (minimum_execution_cost, _) =
-                    execution_cost(&self.process().read(), &execution, consensus_version)?;
+                    execution_cost(&self.process().lock(), &execution, consensus_version)?;
                 let execution_id = execution.to_execution_id()?;
                 let fee_authorization = match fee_record {
                     Some(record) => self.authorize_fee_private(

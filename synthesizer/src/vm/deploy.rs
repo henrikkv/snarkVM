@@ -123,7 +123,7 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
         let deployment_id = deployment.to_deployment_id()?;
         let owner = ProgramOwner::new(private_key, deployment_id, rng)?;
 
-        let (minimum_deployment_cost, _) = deployment_cost(&self.process().read(), &deployment, consensus_version)?;
+        let (minimum_deployment_cost, _) = deployment_cost(&self.process().lock(), &deployment, consensus_version)?;
         let fee_authorization = match fee_record {
             Some(record) => self.authorize_fee_private(
                 private_key,
