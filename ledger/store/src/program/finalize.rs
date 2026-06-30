@@ -302,25 +302,14 @@ pub trait FinalizeStorage<N: Network>: 'static + Clone + Send + Sync {
         let value_id = N::hash_bhp1024(&(key_id, N::hash_bhp1024(&value.to_bits_le())?).to_bits_le())?;
 
         atomic_batch_scope!(self, {
-            // Update the historical maps.
+            // Record the value at the current height in the historical map.
+            // The update heights are reconstructed on read by scanning this map's height suffix,
+            // so no separate (and ever-growing) per-key heights vector is maintained here.
             #[cfg(feature = "history")]
             {
                 let current_height = self.current_block_height().load(Ordering::SeqCst);
-
-                // Insert the initial value as the first historical update.
                 self.mapping_update_map()
                     .insert((program_id, mapping_name, key.clone(), current_height), value.clone())?;
-
-                // Ensure the update height history does not already exist.
-                let height_update_key = (program_id, mapping_name, key.clone());
-                if self.mapping_update_heights_map().contains_key_speculative(&height_update_key)? {
-                    bail!(
-                        "Illegal operation: the history of height updates for '{program_id}/{mapping_name}/{key}' already exists in storage"
-                    );
-                }
-
-                // Insert the first historical update height.
-                self.mapping_update_heights_map().insert(height_update_key, vec![current_height])?;
             }
 
             // Update the key-value map with the new key-value.
@@ -355,23 +344,14 @@ pub trait FinalizeStorage<N: Network>: 'static + Clone + Send + Sync {
         let value_id = N::hash_bhp1024(&(key_id, N::hash_bhp1024(&value.to_bits_le())?).to_bits_le())?;
 
         atomic_batch_scope!(self, {
-            // Update the historical maps.
+            // Record the updated value at the current height in the historical map.
+            // The update heights are reconstructed on read by scanning this map's height suffix,
+            // so no separate (and ever-growing) per-key heights vector is maintained here.
             #[cfg(feature = "history")]
             {
                 let current_height = self.current_block_height().load(Ordering::SeqCst);
-
-                // Register the updated value at the current height.
                 self.mapping_update_map()
                     .insert((program_id, mapping_name, key.clone(), current_height), value.clone())?;
-
-                // Obtain the list of past update heights.
-                let key = (program_id, mapping_name, key.clone());
-                let update_heights =
-                    self.mapping_update_heights_map().get_confirmed(&key)?.map(|list| list.into_owned());
-                let mut update_heights = update_heights.unwrap_or_default();
-                // Extend the historical update heights with the current height.
-                update_heights.push(current_height);
-                self.mapping_update_heights_map().insert(key, update_heights)?;
             }
 
             // Update the key-value map with the new key-value.
@@ -434,23 +414,14 @@ pub trait FinalizeStorage<N: Network>: 'static + Clone + Send + Sync {
 
             // Insert the new key-value entries.
             for (key, value) in entries {
-                // Update the historical maps.
+                // Record the updated value at the current height in the historical map.
+                // The update heights are reconstructed on read by scanning this map's height suffix,
+                // so no separate (and ever-growing) per-key heights vector is maintained here.
                 #[cfg(feature = "history")]
                 {
                     let current_height = self.current_block_height().load(Ordering::SeqCst);
-
-                    // Register the updated value at the current height.
                     self.mapping_update_map()
                         .insert((program_id, mapping_name, key.clone(), current_height), value.clone())?;
-
-                    // Obtain the list of past update heights.
-                    let key = (program_id, mapping_name, key.clone());
-                    let update_heights =
-                        self.mapping_update_heights_map().get_confirmed(&key)?.map(|list| list.into_owned());
-                    let mut update_heights = update_heights.unwrap_or_default();
-                    // Extend the historical update heights with the current height.
-                    update_heights.push(current_height);
-                    self.mapping_update_heights_map().insert(key, update_heights)?;
                 }
 
                 // Insert the key-value entry.
@@ -875,7 +846,27 @@ impl<N: Network, P: FinalizeStorage<N>> FinalizeStore<N, P> {
         mapping_name: Identifier<N>,
         mapping_key: Plaintext<N>,
     ) -> Result<Option<Cow<'_, Vec<u32>>>, Error> {
-        self.storage.mapping_update_heights_map().get_confirmed(&(program_id, mapping_name, mapping_key))
+        // Reconstruct the update heights from the historical value map, which is keyed by
+        // `(program ID, mapping name, key, height)`. Scanning the `(program ID, mapping name, key)`
+        // prefix yields one entry per recorded height, avoiding a separate per-key heights vector.
+        let mut heights = self
+            .storage
+            .mapping_update_map()
+            .get_keys_confirmed_with_prefix(&(program_id, mapping_name, mapping_key))?
+            .into_iter()
+            .map(|(_, _, _, height)| height)
+            .collect::<Vec<_>>();
+
+        // Return nothing if the key has never been updated.
+        if heights.is_empty() {
+            return Ok(None);
+        }
+
+        // The keys encode the height as little-endian bytes, so the scan order does not match
+        // numerical order; sort ascending so that `binary_search` is valid in lookups.
+        heights.sort_unstable();
+
+        Ok(Some(Cow::Owned(heights)))
     }
 
     /// Returns the historical staking rewards map.
