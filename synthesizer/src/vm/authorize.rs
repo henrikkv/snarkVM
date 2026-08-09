@@ -15,6 +15,7 @@
 
 use super::*;
 
+use crate::process_simulate;
 use snarkvm_synthesizer_error::*;
 
 impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
@@ -49,6 +50,35 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
         // Authorize the call.
         let result = self.authorize_raw(private_key, program_id, function_name, inputs, rng);
         finish!(timer, "Authorize the call");
+        result
+    }
+
+    #[inline]
+    pub fn authorize_local_proofless<R: Rng + CryptoRng>(
+        &self,
+        private_key: &PrivateKey<N>,
+        program_id: impl TryInto<ProgramID<N>>,
+        function_name: impl TryInto<Identifier<N>>,
+        inputs: impl IntoIterator<IntoIter = impl ExactSizeIterator<Item = impl TryInto<Value<N>>>>,
+        rng: &mut R,
+    ) -> Result<Authorization<N>, VmAuthError> {
+        let timer = timer!("VM::authorize_local_proofless");
+
+        let program_id = program_id.try_into().map_err(|_| anyhow!("Invalid program ID"))?;
+        let function_name = function_name.try_into().map_err(|_| anyhow!("Invalid function name"))?;
+        let inputs = inputs
+            .into_iter()
+            .enumerate()
+            .map(|(index, input)| {
+                input
+                    .try_into()
+                    .map_err(|_| anyhow!("Failed to parse input #{index} for '{program_id}/{function_name}'"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        lap!(timer, "Prepare inputs");
+
+        let result = self.authorize_raw_proofless(private_key, program_id, function_name, inputs, rng);
+        finish!(timer, "Authorize the call (proofless)");
         result
     }
 
@@ -87,6 +117,36 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
         result
     }
 
+    #[inline]
+    pub fn authorize_fee_private_local_proofless<R: Rng + CryptoRng>(
+        &self,
+        private_key: &PrivateKey<N>,
+        credits: Record<N, Plaintext<N>>,
+        base_fee_in_microcredits: u64,
+        priority_fee_in_microcredits: u64,
+        deployment_or_execution_id: Field<N>,
+        rng: &mut R,
+    ) -> Result<Authorization<N>> {
+        macro_rules! logic {
+            ($process:expr, $network:path, $aleo:path) => {{
+                let authorization = $process.authorize_fee_private::<$aleo, _>(
+                    cast_ref!(&private_key as PrivateKey<$network>),
+                    cast_ref!(credits as Record<$network, Plaintext<$network>>).clone(),
+                    base_fee_in_microcredits,
+                    priority_fee_in_microcredits,
+                    *cast_ref!(deployment_or_execution_id as Field<$network>),
+                    rng,
+                )?;
+                Ok(cast_ref!(authorization as Authorization<N>).clone())
+            }};
+        }
+
+        let timer = timer!("VM::authorize_fee_private_local_proofless");
+        let result = process_simulate!(self, logic);
+        finish!(timer, "Compute the authorization (proofless)");
+        result
+    }
+
     /// Authorizes the fee given the the fee amount (in microcredits) and the deployment or execution ID.
     #[inline]
     pub fn authorize_fee_public<R: Rng + CryptoRng>(
@@ -116,6 +176,34 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
         let timer = timer!("VM::authorize_fee_public");
         let result = process!(self, logic);
         finish!(timer, "Compute the authorization");
+        result
+    }
+
+    #[inline]
+    pub fn authorize_fee_public_local_proofless<R: Rng + CryptoRng>(
+        &self,
+        private_key: &PrivateKey<N>,
+        base_fee_in_microcredits: u64,
+        priority_fee_in_microcredits: u64,
+        deployment_or_execution_id: Field<N>,
+        rng: &mut R,
+    ) -> Result<Authorization<N>> {
+        macro_rules! logic {
+            ($process:expr, $network:path, $aleo:path) => {{
+                let authorization = $process.authorize_fee_public::<$aleo, _>(
+                    cast_ref!(&private_key as PrivateKey<$network>),
+                    base_fee_in_microcredits,
+                    priority_fee_in_microcredits,
+                    *cast_ref!(deployment_or_execution_id as Field<$network>),
+                    rng,
+                )?;
+                Ok(cast_ref!(authorization as Authorization<N>).clone())
+            }};
+        }
+
+        let timer = timer!("VM::authorize_fee_public_local_proofless");
+        let result = process_simulate!(self, logic);
+        finish!(timer, "Compute the authorization (proofless)");
         result
     }
 }
@@ -150,6 +238,34 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
         let timer = timer!("VM::authorize_raw");
         let result = process!(self, logic);
         finish!(timer, "Compute the authorization");
+        result
+    }
+
+    #[inline]
+    fn authorize_raw_proofless<R: Rng + CryptoRng>(
+        &self,
+        private_key: &PrivateKey<N>,
+        program_id: ProgramID<N>,
+        function_name: Identifier<N>,
+        inputs: Vec<Value<N>>,
+        rng: &mut R,
+    ) -> Result<Authorization<N>, VmAuthError> {
+        macro_rules! logic {
+            ($process:expr, $network:path, $aleo:path) => {{
+                let authorization = $process.authorize::<$aleo, _>(
+                    cast_ref!(&private_key as PrivateKey<$network>),
+                    cast_ref!(program_id as ProgramID<$network>),
+                    cast_ref!(function_name as Identifier<$network>),
+                    cast_ref!(inputs as Vec<Value<$network>>).iter(),
+                    rng,
+                )?;
+                Ok(cast_ref!(authorization as Authorization<N>).clone())
+            }};
+        }
+
+        let timer = timer!("VM::authorize_raw_proofless");
+        let result = process_simulate!(self, logic);
+        finish!(timer, "Compute the authorization (proofless)");
         result
     }
 }

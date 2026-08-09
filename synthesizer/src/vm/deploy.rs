@@ -125,7 +125,7 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
 
         let (minimum_deployment_cost, _) = deployment_cost(&self.process().lock(), &deployment, consensus_version)?;
         let fee_authorization = match fee_record {
-            Some(record) => self.authorize_fee_private(
+            Some(record) => self.authorize_fee_private_local_proofless(
                 private_key,
                 record,
                 minimum_deployment_cost,
@@ -133,7 +133,7 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
                 deployment_id,
                 rng,
             )?,
-            None => self.authorize_fee_public(
+            None => self.authorize_fee_public_local_proofless(
                 private_key,
                 minimum_deployment_cost,
                 priority_fee_in_microcredits,

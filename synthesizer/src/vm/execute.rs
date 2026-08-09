@@ -17,6 +17,7 @@
 
 use super::*;
 
+use crate::process_simulate;
 use console::network::varuna_version_from_consensus;
 use snarkvm_synthesizer_error::*;
 
@@ -277,7 +278,7 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
             }};
         }
 
-        let result = process!(self, logic);
+        let result = process_simulate!(self, logic);
         finish!(timer, "Execute the authorization (proofless)");
         result
     }
@@ -368,7 +369,7 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
             }};
         }
 
-        let result = process!(self, logic);
+        let result = process_simulate!(self, logic);
         finish!(timer, "Execute the fee authorization (proofless)");
         result
     }
@@ -387,7 +388,7 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
             Some(q) => q,
             None => &Query::VM(self.block_store().clone()),
         };
-        let authorization = self.authorize(private_key, program_id, function_name, inputs, rng)?;
+        let authorization = self.authorize_local_proofless(private_key, program_id, function_name, inputs, rng)?;
         let is_fee_required = !(authorization.is_split() || authorization.is_upgrade());
         let is_priority_fee_declared = priority_fee_in_microcredits > 0;
         let (execution, response) = self.execute_authorization_proofless_raw(authorization, query, rng)?;
@@ -398,7 +399,7 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
                     execution_cost(&self.process().lock(), &execution, consensus_version)?;
                 let execution_id = execution.to_execution_id()?;
                 let fee_authorization = match fee_record {
-                    Some(record) => self.authorize_fee_private(
+                    Some(record) => self.authorize_fee_private_local_proofless(
                         private_key,
                         record,
                         minimum_execution_cost,
@@ -406,7 +407,7 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
                         execution_id,
                         rng,
                     )?,
-                    None => self.authorize_fee_public(
+                    None => self.authorize_fee_public_local_proofless(
                         private_key,
                         minimum_execution_cost,
                         priority_fee_in_microcredits,

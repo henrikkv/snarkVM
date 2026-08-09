@@ -582,17 +582,12 @@ impl<N: Network> Stack<N> {
         let assignment = A::eject_assignment_and_reset();
 
         // If the circuit is in `Synthesize` or `Execute` mode, synthesize the circuit key, if it does not exist.
-        if matches!(registers.call_stack_ref(), CallStack::Synthesize(..) | CallStack::Execute(..)) {
-            // If the proving key does not exist, then synthesize it.
-            if !self.contains_proving_key(function.name()) {
-                if A::is_in_simulate_mode() {
-                    super::helpers::synthesize_proving_key_for_simulate(self, function.name(), rng)?;
-                } else {
-                    // Add the circuit key to the mapping.
-                    self.synthesize_from_assignment(function.name(), &assignment)?;
-                }
-                lap!(timer, "Synthesize the {} circuit key", function.name());
-            }
+        if !A::is_in_simulate_mode()
+            && matches!(registers.call_stack_ref(), CallStack::Synthesize(..) | CallStack::Execute(..))
+            && !self.contains_proving_key(function.name())
+        {
+            self.synthesize_from_assignment(function.name(), &assignment)?;
+            lap!(timer, "Synthesize the {} circuit key", function.name());
         }
         // If the circuit is in `Authorize` mode, then save the transition.
         if let CallStack::Authorize(_, _, authorization) = registers.call_stack_ref() {
@@ -631,7 +626,10 @@ impl<N: Network> Stack<N> {
             let transition = Transition::from(&console_request, &response, &output_types, &output_registers)?;
 
             // Retrieve the proving key.
-            let proving_key = self.get_proving_key(function.name())?;
+            let proving_task = match A::is_in_simulate_mode() {
+                true => None,
+                false => Some((self.get_proving_key(function.name())?, assignment)),
+            };
             // Construct the call metrics.
             let metrics = CallMetrics {
                 program_id: *self.program_id(),
@@ -646,7 +644,7 @@ impl<N: Network> Stack<N> {
             trace.write().insert_transition(
                 console_request.input_ids(),
                 &transition,
-                (proving_key, assignment),
+                proving_task,
                 translations_for_transition,
                 metrics,
             )?;

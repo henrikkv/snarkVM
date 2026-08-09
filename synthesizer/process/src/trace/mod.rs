@@ -97,7 +97,7 @@ impl<N: Network> Trace<N> {
         &mut self,
         input_ids: &[InputID<N>],
         transition: &Transition<N>,
-        (proving_key, assignment): (ProvingKey<N>, Assignment<N::Field>),
+        proving_task: Option<(ProvingKey<N>, Assignment<N::Field>)>,
         translations: Vec<(TranslationAssignment<N>, ProvingKey<N>)>,
         metrics: CallMetrics<N>,
     ) -> Result<()> {
@@ -112,10 +112,11 @@ impl<N: Network> Trace<N> {
             self.translation_tasks.insert_transition(*transition.id(), translations)?;
         }
 
-        // Construct the locator.
-        let locator = Locator::new(*transition.program_id(), *transition.function_name());
         // Insert the assignment (and proving key if the entry does not exist), for the specified locator.
-        self.transition_tasks.entry(locator).or_insert((proving_key, vec![])).1.push(assignment);
+        if let Some((proving_key, assignment)) = proving_task {
+            let locator = Locator::new(*transition.program_id(), *transition.function_name());
+            self.transition_tasks.entry(locator).or_insert((proving_key, vec![])).1.push(assignment);
+        }
         // Insert the transition into the list.
         self.transitions.push(transition.clone());
         // Insert the call metrics into the list.
