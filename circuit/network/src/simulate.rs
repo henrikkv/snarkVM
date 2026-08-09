@@ -429,6 +429,14 @@ impl Environment for AleoSimulate {
         E::set_constraint_limit(limit)
     }
 
+    fn get_non_zero_limit() -> Option<(u64, u64, u64)> {
+        E::get_non_zero_limit()
+    }
+
+    fn set_non_zero_limit(limit: Option<(u64, u64, u64)>) {
+        E::set_non_zero_limit(limit)
+    }
+
     fn halt<S: Into<String>, T>(message: S) -> T {
         E::halt(message)
     }

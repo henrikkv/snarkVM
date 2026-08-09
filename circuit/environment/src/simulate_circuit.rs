@@ -129,6 +129,12 @@ impl Environment for SimulateCircuit {
 
     fn set_constraint_limit(_limit: Option<u64>) {}
 
+    fn get_non_zero_limit() -> Option<(u64, u64, u64)> {
+        None
+    }
+
+    fn set_non_zero_limit(_limit: Option<(u64, u64, u64)>) {}
+
     fn halt<S: Into<String>, T>(message: S) -> T {
         panic!("{}", message.into())
     }
