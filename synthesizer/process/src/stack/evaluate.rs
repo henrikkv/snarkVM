@@ -16,7 +16,93 @@
 use super::*;
 use snarkvm_synthesizer_error::*;
 
-use std::sync::OnceLock;
+use std::{cell::RefCell, sync::OnceLock};
+
+pub struct DebugPoint {
+    pub kind: DebugPointKind,
+    pub program_id: String,
+    pub function_name: String,
+    pub index: usize,
+    pub text: String,
+    pub depth: usize,
+    pub is_call: bool,
+    pub registers: Vec<(u64, String)>,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DebugPointKind {
+    Instruction,
+    FinalizeCommand,
+}
+
+pub enum DebugAction {
+    Continue,
+    Halt(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct Frame {
+    pub program_id: String,
+    pub function_name: String,
+    pub is_dynamic: bool,
+}
+
+thread_local! {
+    static DEBUG_HOOK: RefCell<Option<Box<dyn FnMut(DebugPoint) -> DebugAction>>> = const { RefCell::new(None) };
+    pub(crate) static FRAME_STACK: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
+}
+
+pub fn set_debug_hook(hook: Option<Box<dyn FnMut(DebugPoint) -> DebugAction>>) {
+    DEBUG_HOOK.with(|h| *h.borrow_mut() = hook);
+}
+
+pub fn current_frames() -> Vec<Frame> {
+    FRAME_STACK.with(|frames| frames.borrow().clone())
+}
+
+pub(crate) struct FrameGuard;
+
+impl FrameGuard {
+    pub(crate) fn push(program_id: String, function_name: String, is_dynamic: bool) -> Self {
+        FRAME_STACK.with(|frames| frames.borrow_mut().push(Frame { program_id, function_name, is_dynamic }));
+        Self
+    }
+}
+
+impl Drop for FrameGuard {
+    fn drop(&mut self) {
+        FRAME_STACK.with(|frames| {
+            frames.borrow_mut().pop();
+        });
+    }
+}
+
+#[inline]
+pub(crate) fn call_debug_hook(
+    kind: DebugPointKind,
+    program_id: &ProgramID<impl Network>,
+    function_name: impl std::fmt::Display,
+    index: usize,
+    text: impl std::fmt::Display,
+    is_call: bool,
+    registers_snapshot: impl FnOnce() -> Vec<(u64, String)>,
+) -> Option<DebugAction> {
+    DEBUG_HOOK.with(|hook| {
+        hook.borrow_mut().as_mut().map(|hook| {
+            let depth = FRAME_STACK.with(|frames| frames.borrow().len());
+            hook(DebugPoint {
+                kind,
+                program_id: program_id.to_string(),
+                function_name: function_name.to_string(),
+                index,
+                text: text.to_string(),
+                depth,
+                is_call,
+                registers: registers_snapshot(),
+            })
+        })
+    })
+}
 
 impl<N: Network> Stack<N> {
     /// Evaluates a program closure on the given inputs.
@@ -59,6 +145,18 @@ impl<N: Network> Stack<N> {
 
         // Evaluate the instructions.
         for (ix, instruction) in closure.instructions().iter().enumerate() {
+            let is_call = matches!(instruction, Instruction::Call(..) | Instruction::CallDynamic(..));
+            if let Some(DebugAction::Halt(reason)) = call_debug_hook(
+                DebugPointKind::Instruction,
+                self.program_id(),
+                closure.name(),
+                ix,
+                instruction,
+                is_call,
+                || registers.debug_snapshot(),
+            ) {
+                return Err(anyhow!("Debugger halted evaluation: {reason}").into());
+            }
             // If the evaluation fails, bail and return the error.
             if let Err(error) = instruction.evaluate(self, &mut registers) {
                 return Err(IndexedInstructionError::new(ix, format!("{instruction}"), error.into()).into());
@@ -267,6 +365,18 @@ impl<N: Network> Stack<N> {
         // Evaluate the instructions.
         // Note: We handle the `call` instruction separately, as it requires special handling.
         for (ix, instruction) in function.instructions().iter().enumerate() {
+            let is_call = matches!(instruction, Instruction::Call(..) | Instruction::CallDynamic(..));
+            if let Some(DebugAction::Halt(reason)) = call_debug_hook(
+                DebugPointKind::Instruction,
+                self.program_id(),
+                function.name(),
+                ix,
+                instruction,
+                is_call,
+                || registers.debug_snapshot(),
+            ) {
+                return Err(anyhow!("Debugger halted evaluation: {reason}").into());
+            }
             // Evaluate the instruction.
             let result = match instruction {
                 // If the instruction is a `call` instruction, we need to handle it separately.
@@ -411,5 +521,85 @@ impl<N: Network> Stack<N> {
         }
 
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Authorization, Process};
+    use circuit::network::AleoV0;
+    use console::{
+        account::PrivateKey,
+        network::{MainnetV0, prelude::*},
+    };
+    use snarkvm_synthesizer_program::Program;
+
+    use std::{cell::RefCell, rc::Rc, str::FromStr};
+
+    use super::{DebugAction, DebugPoint, DebugPointKind, set_debug_hook};
+
+    type CurrentNetwork = MainnetV0;
+    type CurrentAleo = AleoV0;
+
+    fn setup() -> (Process<CurrentNetwork>, Authorization<CurrentNetwork>) {
+        let rng = &mut TestRng::default();
+        let private_key = PrivateKey::<CurrentNetwork>::new(rng).unwrap();
+
+        let program = Program::<CurrentNetwork>::from_str(
+            r"
+program debug_info.aleo;
+function foo:
+    input r0 as u32.private;
+    add r0 r0 into r1;
+    add r1 r1 into r2;
+    output r2 as u32.public;",
+        )
+        .unwrap();
+
+        let process = Process::load().unwrap();
+        process.lock().add_program(&program).unwrap();
+
+        let authorization = process
+            .authorize::<CurrentAleo, _>(
+                &private_key,
+                "debug_info.aleo",
+                "foo",
+                [console::program::Value::from_str("1u32").unwrap()].iter(),
+                rng,
+            )
+            .unwrap();
+
+        (process, authorization)
+    }
+
+    #[test]
+    fn test_debug_info_fires_once_per_instruction_in_order() {
+        let (process, authorization) = setup();
+
+        let seen = Rc::new(RefCell::new(Vec::<(usize, DebugPointKind)>::new()));
+        let seen_in_hook = seen.clone();
+        set_debug_hook(Some(Box::new(move |point: DebugPoint| {
+            seen_in_hook.borrow_mut().push((point.index, point.kind));
+            DebugAction::Continue
+        })));
+
+        let result = process.evaluate::<CurrentAleo>(authorization);
+        set_debug_hook(None);
+
+        result.unwrap();
+        assert_eq!(seen.borrow().as_slice(), &[(0, DebugPointKind::Instruction), (1, DebugPointKind::Instruction)]);
+    }
+
+    #[test]
+    fn test_debug_info_halt_short_circuits_evaluation() {
+        let (process, authorization) = setup();
+
+        set_debug_hook(Some(Box::new(|_point: DebugPoint| DebugAction::Halt("quit".to_string()))));
+
+        let result = process.evaluate::<CurrentAleo>(authorization);
+        set_debug_hook(None);
+
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("Debugger halted evaluation"));
     }
 }

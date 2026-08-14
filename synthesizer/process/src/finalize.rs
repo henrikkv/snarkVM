@@ -442,10 +442,25 @@ fn finalize_constructor<N: Network, P: FinalizeStorage<N>>(
     // Initialize a counter for the commands.
     let mut counter = 0;
 
+    let _frame = FrameGuard::push(program_id.to_string(), resource.to_string(), false);
+
     // Evaluate the commands.
     while counter < constructor.commands().len() {
         // Retrieve the command.
         let command = &constructor.commands()[counter];
+        if let Some(DebugAction::Halt(reason)) =
+            call_debug_hook(DebugPointKind::FinalizeCommand, program_id, resource, counter, command, false, || {
+                registers.debug_snapshot()
+            })
+        {
+            indexed_finalize_bail!(
+                Some((*program_id, *edition)),
+                Some(resource),
+                counter,
+                command.clone(),
+                "Debugger halted finalization: {reason}"
+            );
+        }
         // Finalize the command.
         match &command {
             Command::Await(_) => {
@@ -534,6 +549,8 @@ fn finalize_transition<N: Network, P: FinalizeStorage<N>>(
     'outer: while let Some(FinalizeState { mut counter, mut registers, stack, mut call_counter, mut awaited }) =
         states.pop()
     {
+        let _frame = FrameGuard::push(stack.program_id().to_string(), registers.function_name().to_string(), false);
+
         // Retrieve the current program ID, edition, and function name for error reporting.
         let finalize_program_id = *stack.program_id();
         let finalize_edition = *stack.program_edition();
@@ -560,6 +577,23 @@ fn finalize_transition<N: Network, P: FinalizeStorage<N>>(
         while counter < finalize.commands().len() {
             // Retrieve the command.
             let command = &finalize.commands()[counter];
+            if let Some(DebugAction::Halt(reason)) = call_debug_hook(
+                DebugPointKind::FinalizeCommand,
+                &finalize_program_id,
+                finalize_resource,
+                counter,
+                command,
+                matches!(command, Command::Await(..)),
+                || registers.debug_snapshot(),
+            ) {
+                indexed_finalize_bail!(
+                    Some((finalize_program_id, finalize_edition)),
+                    Some(finalize_resource),
+                    counter,
+                    command.clone(),
+                    "Debugger halted finalization: {reason}"
+                );
+            }
             // Finalize the command.
             match &command {
                 Command::Await(await_) => {
@@ -1018,5 +1052,97 @@ function compute:
 
         // Ensure the program exists.
         assert!(process.contains_program(program.id()));
+    }
+
+    fn setup_debug_info_execution() -> (
+        Process<CurrentNetwork>,
+        FinalizeStore<CurrentNetwork, FinalizeMemory<CurrentNetwork>>,
+        Execution<CurrentNetwork>,
+    ) {
+        let rng = &mut TestRng::default();
+        let private_key = PrivateKey::<CurrentNetwork>::new(rng).unwrap();
+
+        let program = Program::<CurrentNetwork>::from_str(
+            r"
+program debug_info.aleo;
+
+mapping counts:
+    key as u32.public;
+    value as u32.public;
+
+function bump:
+    input r0 as u32.private;
+    async bump r0 into r1;
+    output r1 as debug_info.aleo/bump.future;
+
+finalize bump:
+    input r0 as u32.public;
+    get.or_use counts[0u32] 0u32 into r1;
+    add r1 r0 into r2;
+    set r2 into counts[0u32];
+",
+        )
+        .unwrap();
+
+        let process = Process::load().unwrap();
+        process.lock().add_program(&program).unwrap();
+
+        let finalize_store =
+            FinalizeStore::<CurrentNetwork, FinalizeMemory<_>>::open(StorageMode::new_test(None)).unwrap();
+        finalize_store.initialize_mapping(*program.id(), Identifier::from_str("counts").unwrap()).unwrap();
+
+        let authorization = process
+            .authorize::<CurrentAleo, _>(
+                &private_key,
+                program.id(),
+                Identifier::from_str("bump").unwrap(),
+                [console::program::Value::from_str("5u32").unwrap()].iter(),
+                rng,
+            )
+            .unwrap();
+        let execution =
+            Execution::from(authorization.transitions().into_values(), Default::default(), None).unwrap();
+
+        (process, finalize_store, execution)
+    }
+
+    #[test]
+    fn test_debug_info_fires_once_per_command_in_order() {
+        let (process, finalize_store, execution) = setup_debug_info_execution();
+
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(usize, DebugPointKind)>::new()));
+        let seen_in_hook = seen.clone();
+        set_debug_hook(Some(Box::new(move |point: DebugPoint| {
+            assert_eq!(point.kind, DebugPointKind::FinalizeCommand);
+            seen_in_hook.borrow_mut().push((point.index, point.kind));
+            DebugAction::Continue
+        })));
+
+        let state = FinalizeGlobalState::new_genesis::<CurrentNetwork>().unwrap();
+        let result = process.lock().finalize_execution(state, &finalize_store, &execution, None);
+        set_debug_hook(None);
+
+        result.unwrap();
+        assert_eq!(
+            seen.borrow().as_slice(),
+            &[
+                (0, DebugPointKind::FinalizeCommand),
+                (1, DebugPointKind::FinalizeCommand),
+                (2, DebugPointKind::FinalizeCommand)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_debug_info_halt_short_circuits_finalization() {
+        let (process, finalize_store, execution) = setup_debug_info_execution();
+
+        set_debug_hook(Some(Box::new(|_point: DebugPoint| DebugAction::Halt("quit".to_string()))));
+        let state = FinalizeGlobalState::new_genesis::<CurrentNetwork>().unwrap();
+        let result = process.lock().finalize_execution(state, &finalize_store, &execution, None);
+        set_debug_hook(None);
+
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("Debugger halted finalization"));
     }
 }

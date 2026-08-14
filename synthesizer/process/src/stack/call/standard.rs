@@ -61,6 +61,7 @@ impl<N: Network> CallTrait<N> for Call<N> {
                 return Err(anyhow!("Expected {} inputs, found {}", closure.inputs().len(), inputs.len()).into());
             }
             // Evaluate the closure, and load the outputs.
+            let _frame = FrameGuard::push(substack.program_id().to_string(), closure.name().to_string(), false);
             substack.evaluate_closure::<A>(
                 &closure,
                 &inputs,
@@ -173,6 +174,7 @@ impl<N: Network> CallTrait<N> for Call<N> {
             // Set the (console) caller.
             let console_caller = Some(*stack.program_id());
             // Evaluate the function.
+            let _frame = FrameGuard::push(substack.program_id().to_string(), function.name().to_string(), false);
             let response = substack.evaluate_function::<A, R>(call_stack, console_caller, root_tvk, rng)?;
             // Load the outputs.
             response.outputs().to_vec()

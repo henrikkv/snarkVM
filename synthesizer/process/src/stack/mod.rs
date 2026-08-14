@@ -34,6 +34,8 @@ pub use registers::*;
 mod authorize;
 mod deploy;
 mod evaluate;
+pub use evaluate::*;
+
 mod execute;
 mod helpers;
 

@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{FinalizeRegisters, Stack};
+use crate::{DebugAction, DebugPointKind, FinalizeRegisters, Stack, call_debug_hook};
 use console::{
     network::prelude::*,
     program::{Identifier, Value},
@@ -201,6 +201,17 @@ pub(crate) fn evaluate_view_inner<N: Network>(
     let mut finalize_operations: Vec<snarkvm_synthesizer_program::FinalizeOperation<N>> = Vec::new();
     while counter < view.commands().len() {
         let command = &view.commands()[counter];
+        if let Some(DebugAction::Halt(reason)) = call_debug_hook(
+            DebugPointKind::FinalizeCommand,
+            stack.program_id(),
+            *registers.function_name(),
+            counter,
+            command,
+            false,
+            || registers.debug_snapshot(),
+        ) {
+            bail!("Debugger halted finalization: {reason}");
+        }
         crate::finalize::finalize_command_except_await(
             Some((*stack.program_id(), *stack.program_edition())),
             Some(*registers.function_name()),

@@ -48,6 +48,10 @@ pub struct FinalizeRegisters<N: Network> {
 }
 
 impl<N: Network> FinalizeRegisters<N> {
+    pub fn debug_snapshot(&self) -> Vec<(u64, String)> {
+        self.registers.iter().map(|(register, value)| (*register, value.to_string())).collect()
+    }
+
     /// Initializes a new set of registers, given the finalize types.
     ///
     /// `transition_id` and `nonce` are `Option`s so that callers can express "no transition is

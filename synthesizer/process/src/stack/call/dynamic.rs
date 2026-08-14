@@ -211,6 +211,7 @@ impl<N: Network> CallTrait<N> for CallDynamic<N> {
             // Set the (console) caller.
             let console_caller = Some(*stack.program_id());
             // Evaluate the function.
+            let _frame = FrameGuard::push(substack.program_id().to_string(), function.name().to_string(), true);
             let response = substack.evaluate_function::<A, R>(call_stack, console_caller, root_tvk, rng)?;
             // Convert the callee's outputs to the caller's context.
             response.to_dynamic_outputs()?

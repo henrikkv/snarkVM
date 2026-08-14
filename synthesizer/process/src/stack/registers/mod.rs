@@ -59,6 +59,10 @@ pub struct Registers<N: Network, A: circuit::Aleo<Network = N>> {
 }
 
 impl<N: Network, A: circuit::Aleo<Network = N>> Registers<N, A> {
+    pub fn debug_snapshot(&self) -> Vec<(u64, String)> {
+        self.console_registers.iter().map(|(register, value)| (*register, value.to_string())).collect()
+    }
+
     /// Returns the current call stack.
     #[inline]
     pub fn call_stack(&self) -> CallStack<N> {
