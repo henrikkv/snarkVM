@@ -384,11 +384,30 @@ impl<N: Network, C: ConsensusStorage<N>> VM<N, C> {
         query: Option<&dyn QueryTrait<N>>,
         rng: &mut R,
     ) -> Result<(Transaction<N>, Response<N>), VmExecError> {
+        let authorization = self.authorize_local_proofless(private_key, program_id, function_name, inputs, rng)?;
+        self.execute_authorization_with_response_local_proofless(
+            private_key,
+            authorization,
+            fee_record,
+            priority_fee_in_microcredits,
+            query,
+            rng,
+        )
+    }
+
+    pub fn execute_authorization_with_response_local_proofless<R: Rng + CryptoRng>(
+        &self,
+        private_key: &PrivateKey<N>,
+        authorization: Authorization<N>,
+        fee_record: Option<Record<N, Plaintext<N>>>,
+        priority_fee_in_microcredits: u64,
+        query: Option<&dyn QueryTrait<N>>,
+        rng: &mut R,
+    ) -> Result<(Transaction<N>, Response<N>), VmExecError> {
         let query = match query {
             Some(q) => q,
             None => &Query::VM(self.block_store().clone()),
         };
-        let authorization = self.authorize_local_proofless(private_key, program_id, function_name, inputs, rng)?;
         let is_fee_required = !(authorization.is_split() || authorization.is_upgrade());
         let is_priority_fee_declared = priority_fee_in_microcredits > 0;
         let (execution, response) = self.execute_authorization_proofless_raw(authorization, query, rng)?;
