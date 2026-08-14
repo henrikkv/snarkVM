@@ -43,6 +43,14 @@ pub struct Field<E: Environment> {
 
 impl<E: Environment> FieldTrait for Field<E> {}
 
+impl<E: Environment> TryFrom<&str> for Field<E> {
+    type Error = Error;
+
+    fn try_from(s: &str) -> Result<Self> {
+        Self::from_bits_le(&s.as_bytes().to_bits_le())
+    }
+}
+
 impl<E: Environment> Field<E> {
     /// The field size in bits.
     pub const SIZE_IN_BITS: usize = E::Field::SIZE_IN_BITS;

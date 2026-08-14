@@ -53,8 +53,7 @@ impl<N: Network> Process<N> {
 
         // Extract the trace.
         let mut trace = Arc::try_unwrap(trace).unwrap().into_inner();
-        // Ensure the trace is not empty.
-        if trace.transitions().is_empty() {
+        if !A::is_in_simulate_mode() && trace.transitions().is_empty() {
             return Err(anyhow!("Execution of '{locator}' is empty").into());
         }
         // Construct the call graph.

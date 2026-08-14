@@ -213,6 +213,22 @@ impl<N: Network> DynamicRecord<N> {
     }
 }
 
+impl<N: Network> TryFrom<Record<N, Plaintext<N>>> for DynamicRecord<N> {
+    type Error = Error;
+
+    fn try_from(record: Record<N, Plaintext<N>>) -> Result<Self> {
+        Self::from_record(&record)
+    }
+}
+
+impl<N: Network> TryFrom<DynamicRecord<N>> for Record<N, Plaintext<N>> {
+    type Error = Error;
+
+    fn try_from(record: DynamicRecord<N>) -> Result<Self> {
+        record.to_record(true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

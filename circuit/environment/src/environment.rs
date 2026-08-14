@@ -196,4 +196,8 @@ pub trait Environment: 'static + Copy + Clone + fmt::Debug + fmt::Display + Eq +
 
     /// Clears and initializes an empty environment.
     fn reset();
+
+    fn is_in_simulate_mode() -> bool {
+        false
+    }
 }

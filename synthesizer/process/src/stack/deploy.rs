@@ -24,6 +24,10 @@ impl<N: Network> Stack<N> {
         // Ensure the program contains functions.
         ensure!(!self.program.functions().is_empty(), "Program '{}' has no functions", self.program.id());
 
+        if A::is_in_simulate_mode() {
+            return Deployment::new_proofless(*self.program_edition, self.program.clone());
+        }
+
         // Initialize a vector for the verifying keys and certificates.
         let mut verifying_keys = Vec::with_capacity(self.program.functions().len() + self.program.records().len());
 

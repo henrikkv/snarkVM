@@ -563,7 +563,9 @@ impl<N: Network> Stack<N> {
         })?;
 
         // If the circuit is in `Execute` or `PackageRun` mode, then ensure the circuit is satisfied.
-        if matches!(registers.call_stack_ref(), CallStack::Execute(..) | CallStack::PackageRun(..)) {
+        if !A::is_in_simulate_mode()
+            && matches!(registers.call_stack_ref(), CallStack::Execute(..) | CallStack::PackageRun(..))
+        {
             // If the circuit is empty or not satisfied, then throw an error.
             if A::num_constraints() == 0 || !A::is_satisfied() {
                 return Err(anyhow!(
@@ -580,13 +582,12 @@ impl<N: Network> Stack<N> {
         let assignment = A::eject_assignment_and_reset();
 
         // If the circuit is in `Synthesize` or `Execute` mode, synthesize the circuit key, if it does not exist.
-        if matches!(registers.call_stack_ref(), CallStack::Synthesize(..) | CallStack::Execute(..)) {
-            // If the proving key does not exist, then synthesize it.
-            if !self.contains_proving_key(function.name()) {
-                // Add the circuit key to the mapping.
-                self.synthesize_from_assignment(function.name(), &assignment)?;
-                lap!(timer, "Synthesize the {} circuit key", function.name());
-            }
+        if !A::is_in_simulate_mode()
+            && matches!(registers.call_stack_ref(), CallStack::Synthesize(..) | CallStack::Execute(..))
+            && !self.contains_proving_key(function.name())
+        {
+            self.synthesize_from_assignment(function.name(), &assignment)?;
+            lap!(timer, "Synthesize the {} circuit key", function.name());
         }
         // If the circuit is in `Authorize` mode, then save the transition.
         if let CallStack::Authorize(_, _, authorization) = registers.call_stack_ref() {
@@ -614,13 +615,21 @@ impl<N: Network> Stack<N> {
         }
         // If the circuit is in `Execute` mode, then execute the circuit into a transition.
         else if let CallStack::Execute(_, trace, translations) = registers.call_stack_ref() {
+            // Pop the translation group for this execution level.
+            // This group contains translations (with proving keys) from dynamic calls made at this level.
+            let translations_for_transition =
+                translations.write().pop().ok_or_else(|| anyhow!("Translation stack underflow: no group to pop"))?;
+
             registers.ensure_console_and_circuit_registers_match()?;
 
             // Construct the transition.
             let transition = Transition::from(&console_request, &response, &output_types, &output_registers)?;
 
             // Retrieve the proving key.
-            let proving_key = self.get_proving_key(function.name())?;
+            let proving_task = match A::is_in_simulate_mode() {
+                true => None,
+                false => Some((self.get_proving_key(function.name())?, assignment)),
+            };
             // Construct the call metrics.
             let metrics = CallMetrics {
                 program_id: *self.program_id(),
@@ -631,16 +640,11 @@ impl<N: Network> Stack<N> {
                 num_response_constraints,
             };
 
-            // Pop the translation group for this execution level.
-            // This group contains translations (with proving keys) from dynamic calls made at this level.
-            let translations_for_transition =
-                translations.write().pop().ok_or_else(|| anyhow!("Translation stack underflow: no group to pop"))?;
-
             // Add the transition to the trace.
             trace.write().insert_transition(
                 console_request.input_ids(),
                 &transition,
-                (proving_key, assignment),
+                proving_task,
                 translations_for_transition,
                 metrics,
             )?;

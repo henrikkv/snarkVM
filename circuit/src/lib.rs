@@ -36,6 +36,7 @@ pub mod modules {
         Environment,
         Inject,
         Mode,
+        SimulateCircuit,
         TestnetCircuit,
     };
 

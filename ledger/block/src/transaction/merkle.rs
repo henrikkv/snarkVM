@@ -195,11 +195,13 @@ impl<N: Network> Transaction<N> {
         let num_functions = functions.len();
 
         // Ensure the number of functions and function verifying keys match.
-        ensure!(
-            num_functions == function_verifying_keys.len(),
-            "Number of functions ('{num_functions}') and function verifying keys ('{}') do not match",
-            function_verifying_keys.len()
-        );
+        if !deployment.verifying_keys().is_empty() {
+            ensure!(
+                num_functions == function_verifying_keys.len(),
+                "Number of functions ('{num_functions}') and function verifying keys ('{}') do not match",
+                function_verifying_keys.len()
+            );
+        }
         // Ensure there are functions.
         ensure!(num_functions != 0, "Deployment must contain at least one function");
         // Ensure the number of functions is within the allowed range.
