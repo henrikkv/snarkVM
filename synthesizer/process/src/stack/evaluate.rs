@@ -16,7 +16,14 @@
 use super::*;
 use snarkvm_synthesizer_error::*;
 
-use std::{cell::RefCell, sync::OnceLock};
+use std::{
+    cell::RefCell,
+    sync::{
+        Mutex,
+        OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 pub struct DebugPoint {
     pub kind: DebugPointKind,
@@ -47,13 +54,27 @@ pub struct Frame {
     pub is_dynamic: bool,
 }
 
+static DEBUG_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
+static DEBUG_HOOK: Mutex<Option<Box<dyn FnMut(DebugPoint) -> DebugAction + Send>>> = Mutex::new(None);
+
+fn debug_hook_guard() -> std::sync::MutexGuard<'static, Option<Box<dyn FnMut(DebugPoint) -> DebugAction + Send>>> {
+    DEBUG_HOOK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+static DEBUG_SESSION_LOCK: Mutex<()> = Mutex::new(());
+
+pub fn debug_session_guard() -> std::sync::MutexGuard<'static, ()> {
+    DEBUG_SESSION_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 thread_local! {
-    static DEBUG_HOOK: RefCell<Option<Box<dyn FnMut(DebugPoint) -> DebugAction>>> = const { RefCell::new(None) };
     pub(crate) static FRAME_STACK: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
 }
 
-pub fn set_debug_hook(hook: Option<Box<dyn FnMut(DebugPoint) -> DebugAction>>) {
-    DEBUG_HOOK.with(|h| *h.borrow_mut() = hook);
+pub fn set_debug_hook(hook: Option<Box<dyn FnMut(DebugPoint) -> DebugAction + Send>>) {
+    let installed = hook.is_some();
+    *debug_hook_guard() = hook;
+    DEBUG_HOOK_INSTALLED.store(installed, Ordering::Release);
 }
 
 pub fn current_frames() -> Vec<Frame> {
@@ -87,19 +108,20 @@ pub(crate) fn call_debug_hook(
     is_call: bool,
     registers_snapshot: impl FnOnce() -> Vec<(u64, String)>,
 ) -> Option<DebugAction> {
-    DEBUG_HOOK.with(|hook| {
-        hook.borrow_mut().as_mut().map(|hook| {
-            let depth = FRAME_STACK.with(|frames| frames.borrow().len());
-            hook(DebugPoint {
-                kind,
-                program_id: program_id.to_string(),
-                function_name: function_name.to_string(),
-                index,
-                text: text.to_string(),
-                depth,
-                is_call,
-                registers: registers_snapshot(),
-            })
+    if !DEBUG_HOOK_INSTALLED.load(Ordering::Acquire) {
+        return None;
+    }
+    debug_hook_guard().as_mut().map(|hook| {
+        let depth = FRAME_STACK.with(|frames| frames.borrow().len());
+        hook(DebugPoint {
+            kind,
+            program_id: program_id.to_string(),
+            function_name: function_name.to_string(),
+            index,
+            text: text.to_string(),
+            depth,
+            is_call,
+            registers: registers_snapshot(),
         })
     })
 }
@@ -534,9 +556,12 @@ mod tests {
     };
     use snarkvm_synthesizer_program::Program;
 
-    use std::{cell::RefCell, rc::Rc, str::FromStr};
+    use std::{
+        str::FromStr,
+        sync::{Arc, Mutex},
+    };
 
-    use super::{DebugAction, DebugPoint, DebugPointKind, set_debug_hook};
+    use super::{DebugAction, DebugPoint, DebugPointKind, debug_session_guard, set_debug_hook};
 
     type CurrentNetwork = MainnetV0;
     type CurrentAleo = AleoV0;
@@ -574,12 +599,13 @@ function foo:
 
     #[test]
     fn test_debug_info_fires_once_per_instruction_in_order() {
+        let _session_guard = debug_session_guard();
         let (process, authorization) = setup();
 
-        let seen = Rc::new(RefCell::new(Vec::<(usize, DebugPointKind)>::new()));
+        let seen = Arc::new(Mutex::new(Vec::<(usize, DebugPointKind)>::new()));
         let seen_in_hook = seen.clone();
         set_debug_hook(Some(Box::new(move |point: DebugPoint| {
-            seen_in_hook.borrow_mut().push((point.index, point.kind));
+            seen_in_hook.lock().unwrap().push((point.index, point.kind));
             DebugAction::Continue
         })));
 
@@ -587,11 +613,15 @@ function foo:
         set_debug_hook(None);
 
         result.unwrap();
-        assert_eq!(seen.borrow().as_slice(), &[(0, DebugPointKind::Instruction), (1, DebugPointKind::Instruction)]);
+        assert_eq!(seen.lock().unwrap().as_slice(), &[
+            (0, DebugPointKind::Instruction),
+            (1, DebugPointKind::Instruction)
+        ]);
     }
 
     #[test]
     fn test_debug_info_halt_short_circuits_evaluation() {
+        let _session_guard = debug_session_guard();
         let (process, authorization) = setup();
 
         set_debug_hook(Some(Box::new(|_point: DebugPoint| DebugAction::Halt("quit".to_string()))));

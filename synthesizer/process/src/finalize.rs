@@ -1108,13 +1108,14 @@ finalize bump:
 
     #[test]
     fn test_debug_info_fires_once_per_command_in_order() {
+        let _session_guard = debug_session_guard();
         let (process, finalize_store, execution) = setup_debug_info_execution();
 
-        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(usize, DebugPointKind)>::new()));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(usize, DebugPointKind)>::new()));
         let seen_in_hook = seen.clone();
         set_debug_hook(Some(Box::new(move |point: DebugPoint| {
             assert_eq!(point.kind, DebugPointKind::FinalizeCommand);
-            seen_in_hook.borrow_mut().push((point.index, point.kind));
+            seen_in_hook.lock().unwrap().push((point.index, point.kind));
             DebugAction::Continue
         })));
 
@@ -1124,7 +1125,7 @@ finalize bump:
 
         result.unwrap();
         assert_eq!(
-            seen.borrow().as_slice(),
+            seen.lock().unwrap().as_slice(),
             &[
                 (0, DebugPointKind::FinalizeCommand),
                 (1, DebugPointKind::FinalizeCommand),
@@ -1135,6 +1136,7 @@ finalize bump:
 
     #[test]
     fn test_debug_info_halt_short_circuits_finalization() {
+        let _session_guard = debug_session_guard();
         let (process, finalize_store, execution) = setup_debug_info_execution();
 
         set_debug_hook(Some(Box::new(|_point: DebugPoint| DebugAction::Halt("quit".to_string()))));
